@@ -70,7 +70,9 @@ async function binanceRequest(env, path, params = {}, apiKey = null, secretKey =
   const qs = new URLSearchParams(p).toString();
   const sig = await hmacSha256Hex(secretKey, qs);
 
-  const resp = await fetch(`https://papi.binance.com${path}?${qs}&signature=${sig}`, {
+  // papi 路径用 papi.binance.com，其他用 api.binance.com
+  const base = path.startsWith('/papi') ? 'https://papi.binance.com' : 'https://api.binance.com';
+  const resp = await fetch(`${base}${path}?${qs}&signature=${sig}`, {
     headers: { 'X-MBX-APIKEY': apiKey },
   });
   if (!resp.ok) {
@@ -144,32 +146,56 @@ async function fetchPrices(symbols) {
 // ---------------------------------------------------------------------------
 
 async function fetchBinanceNAV(env, apiKey = null, secretKey = null) {
-  // allow explicit keys for multi-account iteration
   const _binReq = (path, params) => binanceRequest(env, path, params, apiKey, secretKey);
   const STABLECOINS = new Set(['USDT', 'USDC', 'BUSD', 'FDUSD', 'DAI']);
   const positions = [];
   let assets = [];
   let freeUSDT = 0;
+  let isPapi = false; // 是否为 Portfolio Margin 账户
 
-  // Portfolio Margin balance
-  const balanceData = await _binReq('/papi/v1/balance');
-  const nonZero = balanceData.filter(item => parseFloat(item.totalWalletBalance || 0) > 0);
-
-  // Get available USDT
+  // 1. 先尝试 Portfolio Margin API (papi)
+  let rawBalances = [];
   try {
-    const acct = await _binReq('/papi/v1/account');
-    freeUSDT = parseFloat(acct.virtualMaxWithdrawAmount || 0);
-  } catch { /* ignore */ }
+    const balanceData = await _binReq('/papi/v1/balance');
+    rawBalances = balanceData.filter(item => parseFloat(item.totalWalletBalance || 0) > 0)
+      .map(item => ({ asset: item.asset, total: parseFloat(item.totalWalletBalance) }));
+    isPapi = true;
+    // 可用 USDT（扣除保证金占用后）
+    try {
+      const acct = await _binReq('/papi/v1/account');
+      freeUSDT = parseFloat(acct.virtualMaxWithdrawAmount || 0);
+    } catch { /* ignore */ }
+  } catch (e) {
+    // -2015 = 非 papi 账户，回退到普通 spot API
+    if (e.message.includes('-2015') || e.message.includes('Invalid API-key')) {
+      try {
+        const spotData = await _binReq('/api/v3/account', {});
+        const balances = spotData?.balances || [];
+        rawBalances = balances
+          .filter(b => parseFloat(b.free || 0) + parseFloat(b.locked || 0) > 0)
+          .map(b => ({
+            asset: b.asset,
+            total: parseFloat(b.free || 0) + parseFloat(b.locked || 0),
+            free: parseFloat(b.free || 0),
+          }));
+      } catch (e2) {
+        throw new Error(`Binance spot fallback failed: ${e2.message}`);
+      }
+    } else {
+      throw e;
+    }
+  }
 
-  // Collect non-stablecoin symbols for price fetching
-  const priceSymbols = nonZero
-    .filter(item => !STABLECOINS.has(item.asset))
-    .map(item => item.asset);
+  // 2. 获取价格
+  const priceSymbols = rawBalances
+    .filter(b => !STABLECOINS.has(b.asset))
+    .map(b => b.asset);
   const prices = await fetchPrices(priceSymbols);
 
-  for (const item of nonZero) {
-    const asset = item.asset;
-    const total = parseFloat(item.totalWalletBalance || 0);
+  // 3. 构建资产列表
+  for (const b of rawBalances) {
+    const asset = b.asset;
+    const total = b.total;
     if (total <= 0) continue;
 
     let price;
@@ -183,7 +209,14 @@ async function fetchBinanceNAV(env, apiKey = null, secretKey = null) {
     const navValue = total * price;
     if (navValue < 1) continue;
 
-    const displayAmount = (asset === 'USDT' && freeUSDT >= 0) ? freeUSDT : total;
+    // 可用余额展示：papi 用 virtualMaxWithdrawAmount，spot 用 free
+    let displayAmount = total;
+    if (asset === 'USDT') {
+      if (isPapi && freeUSDT >= 0) displayAmount = freeUSDT;
+      else if (b.free != null) displayAmount = b.free;
+    } else if (b.free != null && !isPapi) {
+      displayAmount = b.free;
+    }
     const displayValue = displayAmount * price;
 
     assets.push({
