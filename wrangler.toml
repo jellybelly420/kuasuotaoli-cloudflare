@@ -1,11 +1,11 @@
-name = "kuasuotaoli"
+name = "kuasuotaoli-cloudflare"
 main = "src/index.js"
 compatibility_date = "2024-09-23"
 
 [[kv_namespaces]]
 binding = "NAV_KV"
-id = "REPLACE_WITH_YOUR_KV_NAMESPACE_ID"
-preview_id = "REPLACE_WITH_YOUR_KV_PREVIEW_NAMESPACE_ID"
+id = "9b6aaee7fa934e13b3c6abd14ca5ba6d"
+preview_id = "c8a2f338dfcb473bb96c540cab516811"
 
 [vars]
 PRINCIPAL_USD = "1000000"
