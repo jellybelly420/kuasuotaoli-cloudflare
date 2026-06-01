@@ -384,25 +384,8 @@ async function fetchBybitNAV(env, apiKey = null, secretKey = null) {
 }
 
 // ---------------------------------------------------------------------------
-// NAV history helpers
+// NAV history helpers — D1 primary, KV fallback
 // ---------------------------------------------------------------------------
-
-const NAV_KV_KEY = 'nav_snapshots';
-
-async function loadSnapshots(env) {
-  if (!env.NAV_KV) return {};
-  try {
-    const raw = await env.NAV_KV.get(NAV_KV_KEY, { type: 'json' });
-    return raw || {};
-  } catch {
-    return {};
-  }
-}
-
-async function saveSnapshots(env, snapshots) {
-  if (!env.NAV_KV) return;
-  await env.NAV_KV.put(NAV_KV_KEY, JSON.stringify(snapshots));
-}
 
 function todayCSTString() {
   const now = new Date();
@@ -410,21 +393,73 @@ function todayCSTString() {
   return cst.toISOString().slice(0, 10);
 }
 
-async function maybeSaveSnapshot(env, navValue, perExchange) {
+async function loadSnapshots(env) {
+  // D1 优先
+  if (env.NAV_DB) {
+    try {
+      const { results } = await env.NAV_DB.prepare(
+        'SELECT date, nav, binance_nav, bybit_nav, per_account, ts FROM nav_snapshots ORDER BY date ASC'
+      ).all();
+      const out = {};
+      for (const row of results) {
+        let perAccount = {};
+        try { perAccount = JSON.parse(row.per_account || '{}'); } catch {}
+        out[row.date] = {
+          nav: row.nav,
+          exchanges: { Binance: row.binance_nav || 0, Bybit: row.bybit_nav || 0 },
+          perAccount,
+          ts: row.ts,
+        };
+      }
+      return out;
+    } catch (e) {
+      console.warn('D1 loadSnapshots failed:', e.message);
+    }
+  }
+  // KV 回退
+  if (env.NAV_KV) {
+    try {
+      const raw = await env.NAV_KV.get('nav_snapshots', { type: 'json' });
+      return raw || {};
+    } catch { return {}; }
+  }
+  return {};
+}
+
+async function saveSnapshot(env, date, navValue, perExchange, perAccount) {
+  const ts = new Date(Date.now() + 8 * 3600000).toISOString();
+  const binanceNav = perExchange?.Binance || 0;
+  const bybitNav   = perExchange?.Bybit   || 0;
+  const perAccStr  = JSON.stringify(perAccount || {});
+
+  if (env.NAV_DB) {
+    await env.NAV_DB.prepare(
+      `INSERT INTO nav_snapshots (date, nav, binance_nav, bybit_nav, per_account, ts)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+       ON CONFLICT(date) DO UPDATE SET
+         nav=?2, binance_nav=?3, bybit_nav=?4, per_account=?5, ts=?6`
+    ).bind(date, navValue, binanceNav, bybitNav, perAccStr, ts).run();
+  }
+}
+
+async function maybeSaveSnapshot(env, navValue, perExchange, perAccount) {
   const now = new Date();
   const cstHour = new Date(now.getTime() + 8 * 3600000).getUTCHours();
   if (cstHour < 17) return { saved: false, reason: 'Before 17:00 CST' };
 
   const today = todayCSTString();
-  const snapshots = await loadSnapshots(env);
-  if (snapshots[today]) return { saved: false, reason: 'Already saved today' };
 
-  snapshots[today] = {
-    nav: navValue,
-    exchanges: perExchange,
-    ts: new Date(now.getTime() + 8 * 3600000).toISOString(),
-  };
-  await saveSnapshots(env, snapshots);
+  // 检查今天是否已存
+  if (env.NAV_DB) {
+    try {
+      const row = await env.NAV_DB.prepare(
+        'SELECT date FROM nav_snapshots WHERE date = ?1'
+      ).bind(today).first();
+      if (row) return { saved: false, reason: 'Already saved today' };
+    } catch {}
+  }
+
+  await saveSnapshot(env, today, navValue, perExchange, perAccount);
   return { saved: true, date: today };
 }
 
@@ -690,9 +725,9 @@ async function handleSnapshots(env) {
 
 async function handleSaveSnapshot(request, env) {
   const body = await request.json();
-  const { nav, perExchange } = body || {};
+  const { nav, perExchange, perAccount } = body || {};
   if (!nav || nav <= 0) return json({ ok: false, error: 'Invalid NAV value' });
-  const result = await maybeSaveSnapshot(env, nav, perExchange || {});
+  const result = await maybeSaveSnapshot(env, nav, perExchange || {}, perAccount || {});
   return json({ ok: true, ...result });
 }
 
@@ -820,7 +855,7 @@ async function handleBackfill(request, env) {
     runningNAV = runningNAV - income;
   }
 
-  // Write to KV (don't overwrite existing)
+  // 写入 D1（不覆盖已有快照）
   const existing = await loadSnapshots(env);
   let written = 0;
   for (const [dateStr, navVal] of Object.entries(dailyNavs)) {
@@ -829,15 +864,10 @@ async function handleBackfill(request, env) {
     for (const [ex, navNow] of Object.entries(perExchange || {})) {
       perEx[ex] = navVal * (navNow / totalNow);
     }
-    existing[dateStr] = {
-      nav: navVal,
-      exchanges: perEx,
-      ts: dateStr + 'T17:00:00',
-    };
+    await saveSnapshot(env, dateStr, navVal, perEx, {});
     written++;
   }
 
-  await saveSnapshots(env, existing);
   return json({ ok: true, written, totalDates: allDates.length });
 }
 
@@ -1170,7 +1200,7 @@ async function loadAll() {
       fetch('/api/snapshot', {
         method: 'POST',
         headers: {'Content-Type':'application/json'},
-        body: JSON.stringify({ nav: navRes.totalNAV, perExchange: navRes.perExchange }),
+        body: JSON.stringify({ nav: navRes.totalNAV, perExchange: navRes.perExchange, perAccount: navRes.perAccount }),
       }).catch(() => {});
 
       // Trigger backfill if no history
