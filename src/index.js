@@ -10,13 +10,33 @@
  *   POST /api/backfill  → backfill historical NAV from income history
  *
  * Environment bindings (wrangler.toml / wrangler secret put):
- *   BINANCE_API_KEY, BINANCE_SECRET_KEY
- *   BYBIT_API_KEY,   BYBIT_SECRET_KEY
- *   LP_PASSWORDS     (comma-separated)
+ *
+ *   Binance accounts (主账户 + 2个子账户):
+ *     BINANCE_MAIN_API_KEY   BINANCE_MAIN_SECRET_KEY
+ *     BINANCE_SUB1_API_KEY   BINANCE_SUB1_SECRET_KEY
+ *     BINANCE_SUB2_API_KEY   BINANCE_SUB2_SECRET_KEY
+ *
+ *   Bybit accounts (主账户 + 2个子账户):
+ *     BYBIT_MAIN_API_KEY     BYBIT_MAIN_SECRET_KEY
+ *     BYBIT_SUB1_API_KEY     BYBIT_SUB1_SECRET_KEY
+ *     BYBIT_SUB2_API_KEY     BYBIT_SUB2_SECRET_KEY
+ *
+ *   LP_PASSWORDS     (逗号分隔, e.g. "pass1,pass2")
  *   PRINCIPAL_USD    (default 1000000)
  *   STRATEGY_START_DATE (default 2026-03-22)
  *   NAV_KV           (KV namespace binding)
  */
+
+// 所有账户定义 — 账户 key 后缀 → 显示标签
+// 每个条目: { envPrefix: 'BINANCE_MAIN', label: 'Binance 主账户', exchange: 'Binance' }
+const ACCOUNT_DEFS = [
+  { envPrefix: 'BINANCE_MAIN', label: 'Binance 主账户', exchange: 'Binance' },
+  { envPrefix: 'BINANCE_SUB1', label: 'Binance 子账户1', exchange: 'Binance' },
+  { envPrefix: 'BINANCE_SUB2', label: 'Binance 子账户2', exchange: 'Binance' },
+  { envPrefix: 'BYBIT_MAIN',   label: 'Bybit 主账户',   exchange: 'Bybit'   },
+  { envPrefix: 'BYBIT_SUB1',   label: 'Bybit 子账户1',  exchange: 'Bybit'   },
+  { envPrefix: 'BYBIT_SUB2',   label: 'Bybit 子账户2',  exchange: 'Bybit'   },
+];
 
 // ---------------------------------------------------------------------------
 // Crypto helpers
@@ -40,9 +60,9 @@ async function makeToken(password, secret) {
 // Exchange API helpers
 // ---------------------------------------------------------------------------
 
-async function binanceRequest(env, path, params = {}) {
-  const apiKey = env.BINANCE_API_KEY;
-  const secretKey = env.BINANCE_SECRET_KEY;
+async function binanceRequest(env, path, params = {}, apiKey = null, secretKey = null) {
+  apiKey = apiKey || env.BINANCE_API_KEY;
+  secretKey = secretKey || env.BINANCE_SECRET_KEY;
   if (!apiKey || !secretKey) throw new Error('Binance API keys not configured');
 
   const ts = Date.now();
@@ -60,9 +80,9 @@ async function binanceRequest(env, path, params = {}) {
   return resp.json();
 }
 
-async function bybitRequest(env, path, params = {}) {
-  const apiKey = env.BYBIT_API_KEY;
-  const secretKey = env.BYBIT_SECRET_KEY;
+async function bybitRequest(env, path, params = {}, apiKey = null, secretKey = null) {
+  apiKey = apiKey || env.BYBIT_API_KEY;
+  secretKey = secretKey || env.BYBIT_SECRET_KEY;
   if (!apiKey || !secretKey) throw new Error('Bybit API keys not configured');
 
   const ts = Date.now();
@@ -123,19 +143,21 @@ async function fetchPrices(symbols) {
 // Binance data fetching
 // ---------------------------------------------------------------------------
 
-async function fetchBinanceNAV(env) {
+async function fetchBinanceNAV(env, apiKey = null, secretKey = null) {
+  // allow explicit keys for multi-account iteration
+  const _binReq = (path, params) => binanceRequest(env, path, params, apiKey, secretKey);
   const STABLECOINS = new Set(['USDT', 'USDC', 'BUSD', 'FDUSD', 'DAI']);
   const positions = [];
   let assets = [];
   let freeUSDT = 0;
 
   // Portfolio Margin balance
-  const balanceData = await binanceRequest(env, '/papi/v1/balance');
+  const balanceData = await _binReq('/papi/v1/balance');
   const nonZero = balanceData.filter(item => parseFloat(item.totalWalletBalance || 0) > 0);
 
   // Get available USDT
   try {
-    const acct = await binanceRequest(env, '/papi/v1/account');
+    const acct = await _binReq('/papi/v1/account');
     freeUSDT = parseFloat(acct.virtualMaxWithdrawAmount || 0);
   } catch { /* ignore */ }
 
@@ -179,7 +201,7 @@ async function fetchBinanceNAV(env) {
 
   // Futures positions
   try {
-    const posData = await binanceRequest(env, '/papi/v1/um/positionRisk');
+    const posData = await _binReq('/papi/v1/um/positionRisk');
     for (const pos of posData) {
       const posAmt = parseFloat(pos.positionAmt || 0);
       if (Math.abs(posAmt) === 0) continue;
@@ -213,19 +235,20 @@ async function fetchBinanceNAV(env) {
 // Bybit data fetching
 // ---------------------------------------------------------------------------
 
-async function fetchBybitNAV(env) {
+async function fetchBybitNAV(env, apiKey = null, secretKey = null) {
+  const _bybitReq = (path, params) => bybitRequest(env, path, params, apiKey, secretKey);
   const STABLECOINS = new Set(['USDT', 'USDC', 'DAI', 'FDUSD']);
   const assets = [];
   const positions = [];
 
   // Wallet balance (unified account)
-  const walletData = await bybitRequest(env, '/v5/account/wallet-balance', { accountType: 'UNIFIED' });
+  const walletData = await _bybitReq('/v5/account/wallet-balance', { accountType: 'UNIFIED' });
   const walletList = walletData?.result?.list || [];
 
   // Also fetch funding wallet
   let fundingCoins = [];
   try {
-    const fundData = await bybitRequest(env, '/v5/account/wallet-balance', { accountType: 'FUND' });
+    const fundData = await _bybitReq('/v5/account/wallet-balance', { accountType: 'FUND' });
     fundingCoins = fundData?.result?.list?.[0]?.coin || [];
   } catch { /* ignore */ }
 
@@ -292,7 +315,7 @@ async function fetchBybitNAV(env) {
     while (page < 5) {
       const params = { category: 'linear', settleCoin: 'USDT', limit: '200' };
       if (cursor) params.cursor = cursor;
-      const posData = await bybitRequest(env, '/v5/position/list', params);
+      const posData = await _bybitReq('/v5/position/list', params);
       const rows = posData?.result?.list || [];
       for (const pos of rows) {
         const contracts = parseFloat(pos.size || 0);
@@ -572,36 +595,47 @@ async function handleLogin(request, env) {
 }
 
 async function handleNAV(env) {
-  const results = { binance: null, bybit: null, errors: [] };
+  const errors = [];
+  // accounts[label] = { assets: [...], exchange: 'Binance'|'Bybit' }
+  const accounts = {};
 
-  if (env.BINANCE_API_KEY) {
+  // Fetch all 6 accounts in parallel
+  const tasks = ACCOUNT_DEFS.map(async ({ envPrefix, label, exchange }) => {
+    const apiKey    = env[`${envPrefix}_API_KEY`];
+    const secretKey = env[`${envPrefix}_SECRET_KEY`];
+    if (!apiKey || !secretKey) return; // 未配置则跳过
+
     try {
-      results.binance = await fetchBinanceNAV(env);
+      let data;
+      if (exchange === 'Binance') {
+        data = await fetchBinanceNAV(env, apiKey, secretKey);
+      } else {
+        data = await fetchBybitNAV(env, apiKey, secretKey);
+      }
+      // tag each asset with account label
+      data.assets = data.assets.map(a => ({ ...a, account: label, exchange }));
+      accounts[label] = data;
     } catch (e) {
-      results.errors.push(`Binance: ${e.message}`);
+      errors.push(`${label}: ${e.message}`);
     }
-  }
+  });
+  await Promise.all(tasks);
 
-  if (env.BYBIT_API_KEY) {
-    try {
-      results.bybit = await fetchBybitNAV(env);
-    } catch (e) {
-      results.errors.push(`Bybit: ${e.message}`);
-    }
-  }
-
-  // Build per-exchange NAV (equity method: spot market value + futures unrealized PnL)
-  const perExchange = {};
+  // Per-exchange NAV (equity method)
+  const perExchange = { Binance: 0, Bybit: 0 };
+  const perAccount  = {};
   let totalNAV = 0;
 
-  for (const [key, data] of [['Binance', results.binance], ['Bybit', results.bybit]]) {
-    if (!data) continue;
+  for (const [label, data] of Object.entries(accounts)) {
     const nav = data.assets.reduce((s, a) => s + (a.navValue || 0), 0);
-    perExchange[key] = nav;
+    perAccount[label] = nav;
+    const ex = data.assets[0]?.exchange || '';
+    if (ex === 'Binance') perExchange.Binance += nav;
+    else if (ex === 'Bybit') perExchange.Bybit += nav;
     totalNAV += nav;
   }
 
-  return json({ totalNAV, perExchange, results, errors: results.errors });
+  return json({ totalNAV, perExchange, perAccount, accounts, errors });
 }
 
 async function handleSnapshots(env) {
@@ -645,7 +679,13 @@ async function handleBackfill(request, env) {
   const now = Date.now();
   const startMs = new Date('2026-03-02T00:00:00+08:00').getTime();
 
-  if (env.BINANCE_API_KEY) {
+  // Iterate all configured Binance accounts for income
+  const binancePrefixes = ['BINANCE_MAIN', 'BINANCE_SUB1', 'BINANCE_SUB2'];
+  for (const prefix of binancePrefixes) {
+    const apiKey = env[`${prefix}_API_KEY`] || (prefix === 'BINANCE_MAIN' ? env.BINANCE_API_KEY : null);
+    const secretKey = env[`${prefix}_SECRET_KEY`] || (prefix === 'BINANCE_MAIN' ? env.BINANCE_SECRET_KEY : null);
+    if (!apiKey || !secretKey) continue;
+
     try {
       let fetchStart = startMs;
       while (true) {
@@ -653,7 +693,7 @@ async function handleBackfill(request, env) {
           startTime: fetchStart,
           endTime: now,
           limit: 1000,
-        });
+        }, apiKey, secretKey);
         if (!items?.length) break;
         for (const item of items) {
           const incType = item.incomeType;
@@ -674,7 +714,13 @@ async function handleBackfill(request, env) {
     }
   }
 
-  if (env.BYBIT_API_KEY) {
+  // Iterate all configured Bybit accounts for income
+  const bybitPrefixes = ['BYBIT_MAIN', 'BYBIT_SUB1', 'BYBIT_SUB2'];
+  for (const prefix of bybitPrefixes) {
+    const apiKey = env[`${prefix}_API_KEY`] || (prefix === 'BYBIT_MAIN' ? env.BYBIT_API_KEY : null);
+    const secretKey = env[`${prefix}_SECRET_KEY`] || (prefix === 'BYBIT_MAIN' ? env.BYBIT_SECRET_KEY : null);
+    if (!apiKey || !secretKey) continue;
+
     try {
       let cursor = null;
       for (let page = 0; page < 20; page++) {
@@ -685,7 +731,7 @@ async function handleBackfill(request, env) {
           limit: '50',
         };
         if (cursor) params.cursor = cursor;
-        const resp = await bybitRequest(env, '/v5/account/transaction-log', params);
+        const resp = await bybitRequest(env, '/v5/account/transaction-log', params, apiKey, secretKey);
         const result = resp?.result || {};
         const rows = result.list || [];
         for (const item of rows) {
@@ -704,7 +750,7 @@ async function handleBackfill(request, env) {
         if (!cursor || !rows.length) break;
       }
     } catch (e) {
-      console.warn('Backfill Bybit income failed:', e.message);
+      console.warn(`Backfill ${prefix} income failed:`, e.message);
     }
   }
 
@@ -1106,16 +1152,14 @@ function renderData() {
 
   if (isUnified) {
     displayNAV = navData.totalNAV || 0;
-    const binAssets = (navData.results?.binance?.assets || []).map(a => ({...a, exchange:'Binance'}));
-    const bybitAssets = (navData.results?.bybit?.assets || []).map(a => ({...a, exchange:'Bybit'}));
-    assets = [...binAssets, ...bybitAssets];
+    // Flatten all accounts into one asset list
+    assets = Object.values(navData.accounts || {}).flatMap(d => d.assets || []);
   } else {
-    const key = ex.toLowerCase();
-    const data = navData.results?.[key];
-    if (data) {
-      displayNAV = data.assets.reduce((s, a) => s + (a.navValue || 0), 0);
-      assets = data.assets.map(a => ({...a, exchange: ex}));
-    }
+    // Single exchange: combine assets from accounts matching this exchange
+    const matchingAccounts = Object.values(navData.accounts || {})
+      .filter(d => (d.assets?.[0]?.exchange || '') === ex);
+    assets = matchingAccounts.flatMap(d => d.assets || []);
+    displayNAV = assets.reduce((s, a) => s + (a.navValue || 0), 0);
   }
 
   // Show NAV card
@@ -1125,10 +1169,11 @@ function renderData() {
   document.getElementById('nav-caption').textContent =
     \`Source: \${isUnified ? 'All Exchanges' : ex} | \${new Date().toLocaleTimeString()}\`;
 
-  // Exchange breakdown
+  // Exchange + account breakdown
   const breakdownEl = document.getElementById('exchange-breakdown');
   if (isUnified && navData.perExchange) {
-    breakdownEl.innerHTML = Object.entries(navData.perExchange).map(([label, nav]) => {
+    // Exchange totals
+    let html = Object.entries(navData.perExchange).map(([label, nav]) => {
       const pct = displayNAV > 0 ? (nav / displayNAV * 100).toFixed(1) : '0';
       return nav > 0
         ? \`<div class="exchange-card"><div class="label">\${label}</div>
@@ -1138,6 +1183,22 @@ function renderData() {
             <div class="value" style="color:#9CA3AF">Unavailable</div>
             <div class="pct">—</div></div>\`;
     }).join('');
+    breakdownEl.innerHTML = html;
+
+    // Per-account sub-breakdown (smaller row below)
+    if (navData.perAccount && Object.keys(navData.perAccount).length > 2) {
+      const subHtml = Object.entries(navData.perAccount)
+        .filter(([,v]) => v > 0)
+        .map(([label, nav]) => {
+          const pct = displayNAV > 0 ? (nav / displayNAV * 100).toFixed(1) : '0';
+          return \`<div style="flex:1;min-width:140px;background:#F0F4FF;border:1px solid #DBEAFE;border-radius:10px;padding:10px 14px">
+            <div style="font-size:11px;color:#6B7280;margin-bottom:2px">\${label}</div>
+            <div style="font-size:16px;font-weight:700;color:#1E2329">$\${fmt(nav)}</div>
+            <div style="font-size:11px;color:#6B7280">\${pct}%</div>
+          </div>\`;
+        }).join('');
+      breakdownEl.innerHTML += \`<div style="flex-basis:100%;margin-top:10px;display:flex;gap:10px;flex-wrap:wrap">\${subHtml}</div>\`;
+    }
   } else {
     breakdownEl.innerHTML = '';
   }
@@ -1464,16 +1525,28 @@ function renderAllocationList(assets, totalNAV) {
 function renderHoldings(assets, totalNAV, isUnified) {
   const tabBar = document.getElementById('holdings-tabs');
   const panesEl = document.getElementById('holdings-panes');
+  const navData = state.navData;
 
   if (isUnified) {
-    tabBar.innerHTML = \`
-      <button class="tab-btn active" onclick="switchTab('combined')">Combined</button>
-      <button class="tab-btn" onclick="switchTab('binance')">Binance</button>
-      <button class="tab-btn" onclick="switchTab('bybit')">Bybit</button>\`;
-    panesEl.innerHTML = \`
-      <div class="tab-pane active" id="tab-combined">\${holdingsTable(assets, totalNAV, true)}</div>
-      <div class="tab-pane" id="tab-binance">\${holdingsTable(assets.filter(a=>a.exchange==='Binance'), totalNAV, false)}</div>
-      <div class="tab-pane" id="tab-bybit">\${holdingsTable(assets.filter(a=>a.exchange==='Bybit'), totalNAV, false)}</div>\`;
+    // Build tabs: Combined + Binance + Bybit + each account
+    const accountLabels = Object.keys(navData.accounts || {});
+    let tabs = \`<button class="tab-btn active" onclick="switchTab('combined')">Combined</button>
+      <button class="tab-btn" onclick="switchTab('binance-all')">Binance</button>
+      <button class="tab-btn" onclick="switchTab('bybit-all')">Bybit</button>\`;
+    accountLabels.forEach((lbl, i) => {
+      const id = 'acct-' + i;
+      tabs += \`<button class="tab-btn" onclick="switchTab('\${id}')">\${lbl}</button>\`;
+    });
+    tabBar.innerHTML = tabs;
+
+    let panes = \`<div class="tab-pane active" id="tab-combined">\${holdingsTable(assets, totalNAV, true)}</div>
+      <div class="tab-pane" id="tab-binance-all">\${holdingsTable(assets.filter(a=>a.exchange==='Binance'), totalNAV, true)}</div>
+      <div class="tab-pane" id="tab-bybit-all">\${holdingsTable(assets.filter(a=>a.exchange==='Bybit'), totalNAV, true)}</div>\`;
+    accountLabels.forEach((lbl, i) => {
+      const acctAssets = (navData.accounts[lbl]?.assets || []);
+      panes += \`<div class="tab-pane" id="tab-acct-\${i}">\${holdingsTable(acctAssets, totalNAV, false)}</div>\`;
+    });
+    panesEl.innerHTML = panes;
   } else {
     tabBar.innerHTML = '';
     panesEl.innerHTML = \`<div class="tab-pane active">\${holdingsTable(assets, totalNAV, false)}</div>\`;
