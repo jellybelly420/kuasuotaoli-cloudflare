@@ -841,9 +841,32 @@ async function handleBackfill(request, env) {
   return json({ ok: true, written, totalDates: allDates.length });
 }
 
-// ---------------------------------------------------------------------------
-// HTML Dashboard
-// ---------------------------------------------------------------------------
+async function handleDiag(env) {
+  const ALL_SECRETS = [
+    'BINANCE_MAIN_API_KEY', 'BINANCE_MAIN_SECRET_KEY',
+    'BINANCE_SUB1_API_KEY', 'BINANCE_SUB1_SECRET_KEY',
+    'BINANCE_SUB2_API_KEY', 'BINANCE_SUB2_SECRET_KEY',
+    'BYBIT_MAIN_API_KEY',   'BYBIT_MAIN_SECRET_KEY',
+    'BYBIT_SUB1_API_KEY',   'BYBIT_SUB1_SECRET_KEY',
+    'BYBIT_SUB2_API_KEY',   'BYBIT_SUB2_SECRET_KEY',
+    'LP_PASSWORDS',
+  ];
+  const status = {};
+  for (const key of ALL_SECRETS) {
+    const val = env[key];
+    status[key] = val ? `✅ 已配置 (${val.slice(0,4)}***${val.slice(-2)})` : '❌ 未配置';
+  }
+  // Account pairs summary
+  const accounts = {};
+  for (const def of ACCOUNT_DEFS) {
+    const k = env[`${def.envPrefix}_API_KEY`];
+    const s = env[`${def.envPrefix}_SECRET_KEY`];
+    accounts[def.label] = (k && s) ? '✅ 已配置' : '❌ 未配置';
+  }
+  return json({ secrets: status, accounts });
+}
+
+
 
 const THEME_COLOR = '#0047AB';
 const THEME_ACCENT = '#00D4AA';
@@ -1729,6 +1752,10 @@ export default {
 
     if (path === '/api/backfill' && method === 'POST') {
       return handleBackfill(request, env);
+    }
+
+    if (path === '/api/diag' && method === 'GET') {
+      return handleDiag(env);
     }
 
     return new Response('Not Found', { status: 404 });
