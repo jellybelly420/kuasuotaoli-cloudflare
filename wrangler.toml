@@ -11,9 +11,31 @@ preview_id = "REPLACE_WITH_YOUR_KV_PREVIEW_NAMESPACE_ID"
 PRINCIPAL_USD = "1000000"
 STRATEGY_START_DATE = "2026-03-22"
 
-# Secrets (set via `wrangler secret put`):
-# BINANCE_API_KEY
-# BINANCE_SECRET_KEY
-# BYBIT_API_KEY
-# BYBIT_SECRET_KEY
-# LP_PASSWORDS   (comma-separated, e.g. "pass1,pass2")
+# Secrets — set via `wrangler secret put <NAME>`:
+#
+# Binance 主账户:
+#   BINANCE_MAIN_API_KEY
+#   BINANCE_MAIN_SECRET_KEY
+#
+# Binance 子账户1:
+#   BINANCE_SUB1_API_KEY
+#   BINANCE_SUB1_SECRET_KEY
+#
+# Binance 子账户2:
+#   BINANCE_SUB2_API_KEY
+#   BINANCE_SUB2_SECRET_KEY
+#
+# Bybit 主账户:
+#   BYBIT_MAIN_API_KEY
+#   BYBIT_MAIN_SECRET_KEY
+#
+# Bybit 子账户1:
+#   BYBIT_SUB1_API_KEY
+#   BYBIT_SUB1_SECRET_KEY
+#
+# Bybit 子账户2:
+#   BYBIT_SUB2_API_KEY
+#   BYBIT_SUB2_SECRET_KEY
+#
+# 登录密码 (逗号分隔):
+#   LP_PASSWORDS
