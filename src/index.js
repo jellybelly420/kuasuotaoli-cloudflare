@@ -1362,15 +1362,19 @@ function renderNavChart() {
   const entries = Object.entries(snapshots).sort((a,b) => a[0].localeCompare(b[0]));
 
   let points = entries
-    .map(([d, v]) => ({ date: new Date(d + 'T17:00:00+08:00'), nav: parseFloat(v.nav) }))
-    .filter(p => p.date >= cutoff);
+    .map(([d, v]) => ({ label: d.slice(5), nav: parseFloat(v.nav) }))
+    .filter((_, i, arr) => {
+      const d = new Date(entries[i][0] + 'T00:00:00+08:00');
+      return d >= cutoff;
+    });
 
   // Append current live NAV
   if (currentNAV > 0) {
     const now = new Date();
+    const todayLabel = now.toLocaleDateString('zh-CN',{month:'2-digit',day:'2-digit'}).replace('/','-');
     const last = points[points.length - 1];
-    if (!last || (now - last.date) > 3600000) {
-      points.push({ date: now, nav: currentNAV });
+    if (!last || last.label !== todayLabel) {
+      points.push({ label: todayLabel, nav: currentNAV });
     }
   }
 
@@ -1383,7 +1387,7 @@ function renderNavChart() {
   // Normalize to 1.0000
   const baseNav = points[0].nav;
   const normalized = points.map(p => p.nav / baseNav);
-  const labels = points.map(p => p.date);
+  const labels = points.map(p => p.label);
 
   const periodReturn = (points[points.length-1].nav / points[0].nav - 1) * 100;
   const sign = periodReturn >= 0 ? '+' : '';
@@ -1416,20 +1420,18 @@ function renderNavChart() {
           mode: 'index',
           intersect: false,
           callbacks: {
-            title: items => {
-              const d = new Date(items[0].parsed.x);
-              return d.toLocaleDateString('zh-CN', {month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});
-            },
             label: item => 'NAV: ' + item.parsed.y.toFixed(4),
           }
         }
       },
       scales: {
         x: {
-          type: 'time',
-          time: { unit: cutoffDays <= 1 ? 'hour' : 'day', displayFormats: { hour:'HH:mm', day:'MM-DD' } },
           grid: { display: false },
-          ticks: { color: '#848E9C', font: { size: 11 } },
+          ticks: {
+            color: '#848E9C', font: { size: 11 },
+            maxTicksLimit: 8,
+            maxRotation: 0,
+          },
         },
         y: {
           position: 'right',
@@ -1520,12 +1522,13 @@ function renderDrawdownChart(dates, series) {
   document.getElementById('drawdown-caption').textContent =
     \`回撤/风险指标自 \${stratDate} 起算（建仓期已完成）\`;
 
+  const labels = dates.map(d => d.slice(5));
   const ctx = document.getElementById('drawdown-chart').getContext('2d');
   if (state.ddChart) state.ddChart.destroy();
   state.ddChart = new Chart(ctx, {
     type: 'line',
     data: {
-      labels: dates,
+      labels,
       datasets: [{
         data: series,
         borderColor: '#EF4444',
@@ -1542,7 +1545,7 @@ function renderDrawdownChart(dates, series) {
         tooltip: { callbacks: { label: i => 'Drawdown: ' + i.parsed.y.toFixed(4) + '%' } }
       },
       scales: {
-        x: { grid: { display: false }, ticks: { color: '#848E9C', font: { size: 10 } } },
+        x: { grid: { display: false }, ticks: { color: '#848E9C', font: { size: 10 }, maxTicksLimit: 8, maxRotation: 0 } },
         y: { grid: { color: '#F5F5F5' }, ticks: { color: '#848E9C', font: { size: 10 }, callback: v => v.toFixed(3)+'%' } },
       },
     }
@@ -1699,18 +1702,16 @@ function fmtAmt(n) {
   return n >= 1000 ? n.toLocaleString('en-US',{maximumFractionDigits:2}) : n.toFixed(4);
 }
 function fmtPct(n, decimals=2) {
+  if (n == null || isNaN(n)) return '—';
   const sign = n >= 0 ? '+' : '';
-  return sign + n.toFixed(decimals) + '%';
+  return sign + Number(n).toFixed(decimals) + '%';
 }
 
 function showError(msg) {
   document.getElementById('errors-container').innerHTML += \`<div class="error-msg">⚠ \${msg}</div>\`;
 }
 
-// Chart.js date adapter (use native Date objects as labels)
-// We need the luxon or date-fns adapter for 'time' scale — load it
 </script>
-<script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
 </body>
 </html>`;
 }
