@@ -603,7 +603,10 @@ async function handleNAV(env) {
   const tasks = ACCOUNT_DEFS.map(async ({ envPrefix, label, exchange }) => {
     const apiKey    = env[`${envPrefix}_API_KEY`];
     const secretKey = env[`${envPrefix}_SECRET_KEY`];
-    if (!apiKey || !secretKey) return; // 未配置则跳过
+    if (!apiKey || !secretKey) {
+      // 未配置的账户静默跳过（不报错）
+      return;
+    }
 
     try {
       let data;
@@ -616,7 +619,13 @@ async function handleNAV(env) {
       data.assets = data.assets.map(a => ({ ...a, account: label, exchange }));
       accounts[label] = data;
     } catch (e) {
-      errors.push(`${label}: ${e.message}`);
+      const msg = e.message || '';
+      // IP 白名单错误给出明确提示
+      if (msg.includes('-2015') || msg.includes('Invalid API-key, IP')) {
+        errors.push(`${label}: IP未授权 (${exchange === 'Binance' ? '请在Binance API管理页取消IP限制，或添加Cloudflare Worker IP' : '请检查Bybit API IP设置'})`);
+      } else {
+        errors.push(`${label}: ${msg.slice(0, 120)}`);
+      }
     }
   });
   await Promise.all(tasks);
