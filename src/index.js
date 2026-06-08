@@ -61,8 +61,23 @@ async function makeToken(password, secret) {
 // ---------------------------------------------------------------------------
 
 async function proxyFetch(env, url, method, headers, body) {
-  const fetchFn = env.EXCHANGE_VPC ? env.EXCHANGE_VPC.fetch.bind(env.EXCHANGE_VPC) : fetch;
-  return fetchFn(url, { method, headers, body: body || undefined });
+  if (env.EXCHANGE_VPC) {
+    // 通过 VPC 隧道调用 VPS 上的代理服务，再由代理转发到交易所
+    const resp = await env.EXCHANGE_VPC.fetch('http://localhost:3000/proxy', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-proxy-secret': env.EXCHANGE_PROXY_SECRET || '',
+      },
+      body: JSON.stringify({ url, method, headers, body: body || null }),
+    });
+    if (!resp.ok) {
+      const t = await resp.text();
+      throw new Error(`Proxy error ${resp.status}: ${t.slice(0, 200)}`);
+    }
+    return resp;
+  }
+  return fetch(url, { method, headers, body: body || undefined });
 }
 
 async function binanceRequest(env, path, params = {}, apiKey = null, secretKey = null) {
