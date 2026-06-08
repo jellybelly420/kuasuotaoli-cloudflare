@@ -15,6 +15,7 @@ database_id = "f2575b29-89c6-4214-9b93-f345cc8a673f"
 [vars]
 PRINCIPAL_USD = "1000000"
 STRATEGY_START_DATE = "2026-03-22"
+EXCHANGE_PROXY_URL = "http://69.5.23.213:3000/proxy"
 
 # Secrets — set via `wrangler secret put <NAME>`:
 #

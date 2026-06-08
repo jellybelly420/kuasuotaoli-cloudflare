@@ -60,6 +60,25 @@ async function makeToken(password, secret) {
 // Exchange API helpers
 // ---------------------------------------------------------------------------
 
+async function proxyFetch(env, url, method, headers, body) {
+  const proxyUrl = env.EXCHANGE_PROXY_URL;
+  const proxySecret = env.EXCHANGE_PROXY_SECRET;
+  if (proxyUrl && proxySecret) {
+    const resp = await fetch(proxyUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-proxy-secret': proxySecret },
+      body: JSON.stringify({ url, method, headers, body: body || null }),
+    });
+    if (!resp.ok) {
+      const t = await resp.text();
+      throw new Error(`Proxy error ${resp.status}: ${t.slice(0, 200)}`);
+    }
+    return resp;
+  }
+  // 直连（无代理配置时）
+  return fetch(url, { method, headers, body: body || undefined });
+}
+
 async function binanceRequest(env, path, params = {}, apiKey = null, secretKey = null) {
   apiKey = apiKey || env.BINANCE_API_KEY;
   secretKey = secretKey || env.BINANCE_SECRET_KEY;
@@ -70,11 +89,9 @@ async function binanceRequest(env, path, params = {}, apiKey = null, secretKey =
   const qs = new URLSearchParams(p).toString();
   const sig = await hmacSha256Hex(secretKey, qs);
 
-  // papi 路径用 papi.binance.com，其他用 api.binance.com
   const base = path.startsWith('/papi') ? 'https://papi.binance.com' : 'https://api.binance.com';
-  const resp = await fetch(`${base}${path}?${qs}&signature=${sig}`, {
-    headers: { 'X-MBX-APIKEY': apiKey },
-  });
+  const url = `${base}${path}?${qs}&signature=${sig}`;
+  const resp = await proxyFetch(env, url, 'GET', { 'X-MBX-APIKEY': apiKey }, null);
   if (!resp.ok) {
     const t = await resp.text();
     throw new Error(`Binance ${path} → ${resp.status}: ${t.slice(0, 200)}`);
@@ -94,15 +111,13 @@ async function bybitRequest(env, path, params = {}, apiKey = null, secretKey = n
   const sig = await hmacSha256Hex(secretKey, signPayload);
 
   const url = `https://api.bybit.com${path}${qs ? '?' + qs : ''}`;
-  const resp = await fetch(url, {
-    headers: {
-      'X-BAPI-API-KEY': apiKey,
-      'X-BAPI-SIGN': sig,
-      'X-BAPI-SIGN-ALGO': 'HmacSHA256',
-      'X-BAPI-TIMESTAMP': String(ts),
-      'X-BAPI-RECV-WINDOW': String(recvWindow),
-    },
-  });
+  const resp = await proxyFetch(env, url, 'GET', {
+    'X-BAPI-API-KEY': apiKey,
+    'X-BAPI-SIGN': sig,
+    'X-BAPI-SIGN-ALGO': 'HmacSHA256',
+    'X-BAPI-TIMESTAMP': String(ts),
+    'X-BAPI-RECV-WINDOW': String(recvWindow),
+  }, null);
   if (!resp.ok) {
     const t = await resp.text();
     throw new Error(`Bybit ${path} → ${resp.status}: ${t.slice(0, 200)}`);
