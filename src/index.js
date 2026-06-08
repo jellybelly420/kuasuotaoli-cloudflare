@@ -61,22 +61,8 @@ async function makeToken(password, secret) {
 // ---------------------------------------------------------------------------
 
 async function proxyFetch(env, url, method, headers, body) {
-  const proxyUrl = env.EXCHANGE_PROXY_URL;
-  const proxySecret = env.EXCHANGE_PROXY_SECRET;
-  if (proxyUrl && proxySecret) {
-    const resp = await fetch(proxyUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-proxy-secret': proxySecret },
-      body: JSON.stringify({ url, method, headers, body: body || null }),
-    });
-    if (!resp.ok) {
-      const t = await resp.text();
-      throw new Error(`Proxy error ${resp.status}: ${t.slice(0, 200)}`);
-    }
-    return resp;
-  }
-  // 直连（无代理配置时）
-  return fetch(url, { method, headers, body: body || undefined });
+  const fetchFn = env.EXCHANGE_VPC ? env.EXCHANGE_VPC.fetch.bind(env.EXCHANGE_VPC) : fetch;
+  return fetchFn(url, { method, headers, body: body || undefined });
 }
 
 async function binanceRequest(env, path, params = {}, apiKey = null, secretKey = null) {

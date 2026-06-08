@@ -12,10 +12,14 @@ binding = "NAV_DB"
 database_name = "kuasuotaoli"
 database_id = "f2575b29-89c6-4214-9b93-f345cc8a673f"
 
+[[unsafe.bindings]]
+type = "vpc_network"
+name = "EXCHANGE_VPC"
+network = "bitget-proxy"
+
 [vars]
 PRINCIPAL_USD = "1000000"
 STRATEGY_START_DATE = "2026-03-22"
-EXCHANGE_PROXY_URL = "https://gateway-owen-francisco-expressed.trycloudflare.com/proxy"
 
 # Secrets — set via `wrangler secret put <NAME>`:
 #
