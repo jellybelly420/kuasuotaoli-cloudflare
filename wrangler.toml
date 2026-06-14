@@ -12,9 +12,9 @@ binding = "NAV_DB"
 database_name = "kuasuotaoli"
 database_id = "f2575b29-89c6-4214-9b93-f345cc8a673f"
 
-[[vpc_networks]]
+[[vpc_services]]
 binding = "EXCHANGE_VPC"
-tunnel_id = "10549d5d-0a88-40c7-8624-007a83f282ef"
+service_id = "019ea731-3ad8-7772-848b-3987354e3633"
 remote = true
 
 [vars]
