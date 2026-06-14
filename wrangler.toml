@@ -12,10 +12,10 @@ binding = "NAV_DB"
 database_name = "kuasuotaoli"
 database_id = "f2575b29-89c6-4214-9b93-f345cc8a673f"
 
-[[unsafe.bindings]]
-type = "vpc_services"
-name = "EXCHANGE_VPC"
+[[vpc_services]]
+binding = "EXCHANGE_VPC"
 service_id = "019ea731-3ad8-7772-848b-3987354e3633"
+remote = true
 
 [vars]
 PRINCIPAL_USD = "1000000"
