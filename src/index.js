@@ -127,11 +127,11 @@ async function bybitRequest(env, path, params = {}, apiKey = null, secretKey = n
 }
 
 // Public price fetcher (no auth needed)
-async function fetchPrices(symbols) {
+async function fetchPrices(env, symbols) {
   if (!symbols.length) return {};
   try {
     const encoded = encodeURIComponent(JSON.stringify(symbols.map(s => `"${s}USDT"`)));
-    const resp = await fetch(`https://api.binance.com/api/v3/ticker/price?symbols=${encoded}`);
+    const resp = await proxyFetch(env, `https://api.binance.com/api/v3/ticker/price?symbols=${encoded}`, 'GET', {}, null);
     if (!resp.ok) throw new Error('price fetch failed');
     const data = await resp.json();
     const out = {};
@@ -143,7 +143,7 @@ async function fetchPrices(symbols) {
   } catch {
     // fallback: fetch all tickers from Bybit
     try {
-      const resp = await fetch('https://api.bybit.com/v5/market/tickers?category=spot');
+      const resp = await proxyFetch(env, 'https://api.bybit.com/v5/market/tickers?category=spot', 'GET', {}, null);
       const data = await resp.json();
       const out = {};
       for (const item of (data?.result?.list || [])) {
@@ -206,7 +206,7 @@ async function fetchBinanceNAV(env, apiKey = null, secretKey = null) {
   const priceSymbols = rawBalances
     .filter(b => !STABLECOINS.has(b.asset))
     .map(b => b.asset);
-  const prices = await fetchPrices(priceSymbols);
+  const prices = await fetchPrices(env, priceSymbols);
 
   // 3. 构建资产列表
   for (const b of rawBalances) {
@@ -309,7 +309,7 @@ async function fetchBybitNAV(env, apiKey = null, secretKey = null) {
   const priceSymbols = allCoins
     .filter(c => !STABLECOINS.has(c.coin) && parseFloat(c.walletBalance || 0) > 0)
     .map(c => c.coin);
-  const prices = await fetchPrices(priceSymbols);
+  const prices = await fetchPrices(env, priceSymbols);
 
   // Track seen coins to avoid duplicates
   const seen = new Map();
