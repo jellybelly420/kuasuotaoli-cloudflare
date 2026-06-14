@@ -731,81 +731,6 @@ async function handleNAV(env) {
   return json({ totalNAV, perExchange, perAccount, accounts, errors });
 }
 
-async function handleBackfillBinance(request, env) {
-  // 用 Binance /sapi/v1/accountSnapshot 拉历史每日余额，覆盖指定日期范围里 binance_nav=0 的污染快照。
-  // SPOT 用 totalAssetOfBtc * 当日 BTC 收盘价；FUTURES 用 totalWalletBalance（已是 USDT）。
-  // 对 PM 账户来说，spot + futures 钱包总和 ≈ 组合保证金账户的净值。
-  const body = await request.json().catch(() => ({}));
-  const since = body.since;
-  const until = body.until || todayCSTString();
-  if (!since || !/^\d{4}-\d{2}-\d{2}$/.test(since)) {
-    return json({ ok: false, error: 'since=YYYY-MM-DD required' }, 400);
-  }
-  const sinceMs = Date.parse(since + 'T00:00:00Z');
-  const untilMs = Date.parse(until + 'T23:59:59Z');
-
-  // 1. 拉 BTC 每日收盘价（公开接口走代理）
-  const klines = await proxyFetch(env, `https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1d&startTime=${sinceMs}&endTime=${untilMs}&limit=60`, 'GET', {}, null).then(r => r.json());
-  const btcByDate = {};
-  for (const k of (klines || [])) {
-    const d = new Date(k[0] + 8 * 3600000).toISOString().slice(0, 10);
-    btcByDate[d] = parseFloat(k[4]); // close price
-  }
-
-  // 2. 遍历所有配了 key 的 Binance 账户，拉 SPOT + FUTURES snapshot
-  const binanceUsdByDate = {};
-  const perAccountByDate = {};
-  const accountErrors = [];
-  for (const { envPrefix, label, exchange } of ACCOUNT_DEFS) {
-    if (exchange !== 'Binance') continue;
-    const apiKey    = env[`${envPrefix}_API_KEY`];
-    const secretKey = env[`${envPrefix}_SECRET_KEY`];
-    if (!apiKey || !secretKey) continue;
-
-    for (const type of ['SPOT', 'FUTURES']) {
-      try {
-        const snap = await binanceRequest(env, '/sapi/v1/accountSnapshot', {
-          type, startTime: sinceMs, endTime: untilMs, limit: 30,
-        }, apiKey, secretKey);
-        for (const vo of (snap.snapshotVos || [])) {
-          const d = new Date(vo.updateTime + 8 * 3600000).toISOString().slice(0, 10);
-          let usd = 0;
-          if (type === 'FUTURES') {
-            usd = parseFloat(vo.data?.totalWalletBalance || 0);
-          } else {
-            const btc = parseFloat(vo.data?.totalAssetOfBtc || 0);
-            const px = btcByDate[d] || btcByDate[Object.keys(btcByDate).pop()] || 0;
-            usd = btc * px;
-          }
-          binanceUsdByDate[d] = (binanceUsdByDate[d] || 0) + usd;
-          perAccountByDate[d] = perAccountByDate[d] || {};
-          perAccountByDate[d][label] = (perAccountByDate[d][label] || 0) + usd;
-        }
-      } catch (e) {
-        accountErrors.push(`${label} ${type}: ${(e.message || '').slice(0, 120)}`);
-      }
-    }
-  }
-
-  // 3. 把每日 Binance USD 合并进已有 snapshot（Bybit 部分原样保留）
-  const existing = await loadSnapshots(env);
-  const fixed = [];
-  for (const [d, binUsd] of Object.entries(binanceUsdByDate)) {
-    if (d < since || d > until) continue;
-    const ex = existing[d] || {};
-    const bybitNav = parseFloat(ex.bybit_nav || 0);
-    const oldPerAcc = (() => { try { return ex.per_account ? JSON.parse(ex.per_account) : {}; } catch { return {}; } })();
-    // 把这一天的 Binance 子账户值覆盖掉旧的（旧的可能为 0），Bybit 子账户保留
-    const newPerAcc = { ...oldPerAcc };
-    for (const [acc, v] of Object.entries(perAccountByDate[d] || {})) newPerAcc[acc] = v;
-    const total = binUsd + bybitNav;
-    await saveSnapshot(env, d, total, { Binance: binUsd, Bybit: bybitNav }, newPerAcc);
-    fixed.push({ date: d, binance: Math.round(binUsd), bybit: Math.round(bybitNav), total: Math.round(total) });
-  }
-
-  return json({ ok: true, fixed, accountErrors, since, until });
-}
-
 async function handleSnapshots(env) {
   const snapshots = await loadSnapshots(env);
   const principalUSD = parseFloat(env.PRINCIPAL_USD || '1000000');
@@ -1918,10 +1843,6 @@ export default {
         }
       }
       return json({ ok: true, deleted, since });
-    }
-
-    if (path === '/api/snapshots/backfill-binance' && method === 'POST') {
-      return handleBackfillBinance(request, env);
     }
 
     if (path === '/api/diag' && method === 'GET') {
