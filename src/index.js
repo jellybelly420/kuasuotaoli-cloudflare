@@ -743,6 +743,18 @@ async function handleSaveSnapshot(request, env) {
   const body = await request.json();
   const { nav, perExchange, perAccount } = body || {};
   if (!nav || nav <= 0) return json({ ok: false, error: 'Invalid NAV value' });
+
+  // 防污染：所有「配置了 API key 的交易所」都必须返回 >0 NAV，否则拒绝写入。
+  // 这样即使某个交易所暂时挂掉（API 403/超时/IP 漂移），也不会写入残缺快照导致历史曲线断崖。
+  const expected = new Set();
+  for (const { envPrefix, exchange } of ACCOUNT_DEFS) {
+    if (env[`${envPrefix}_API_KEY`] && env[`${envPrefix}_SECRET_KEY`]) expected.add(exchange);
+  }
+  const missing = [...expected].filter(ex => !((perExchange || {})[ex] > 0));
+  if (missing.length) {
+    return json({ ok: false, saved: false, reason: 'incomplete_snapshot', missing });
+  }
+
   const result = await maybeSaveSnapshot(env, nav, perExchange || {}, perAccount || {});
   return json({ ok: true, ...result });
 }
@@ -753,6 +765,16 @@ async function handleBackfill(request, env) {
   const body = await request.json().catch(() => ({}));
   const { currentNAV, perExchange } = body || {};
   if (!currentNAV || currentNAV <= 0) return json({ ok: false, error: 'Invalid NAV' });
+
+  // 同样的完整性检查，避免用残缺数据回填出错误的历史曲线
+  const expected = new Set();
+  for (const { envPrefix, exchange } of ACCOUNT_DEFS) {
+    if (env[`${envPrefix}_API_KEY`] && env[`${envPrefix}_SECRET_KEY`]) expected.add(exchange);
+  }
+  const missing = [...expected].filter(ex => !((perExchange || {})[ex] > 0));
+  if (missing.length) {
+    return json({ ok: false, reason: 'incomplete_snapshot', missing });
+  }
 
   const snapshots = await loadSnapshots(env);
 
