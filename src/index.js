@@ -1801,6 +1801,28 @@ export default {
       return handleBackfill(request, env);
     }
 
+    if (path === '/api/snapshots/delete' && method === 'POST') {
+      const body = await request.json().catch(() => ({}));
+      const since = body.since;
+      if (!since || !/^\d{4}-\d{2}-\d{2}$/.test(since)) {
+        return json({ ok: false, error: 'since=YYYY-MM-DD required' }, 400);
+      }
+      let deleted = 0;
+      if (env.NAV_DB) {
+        const r = await env.NAV_DB.prepare('DELETE FROM nav_snapshots WHERE date >= ?1').bind(since).run();
+        deleted = r.meta?.changes ?? 0;
+      }
+      if (env.NAV_KV) {
+        const raw = await env.NAV_KV.get('nav_snapshots', { type: 'json' });
+        if (raw) {
+          const kept = {};
+          for (const [d, v] of Object.entries(raw)) if (d < since) kept[d] = v;
+          await env.NAV_KV.put('nav_snapshots', JSON.stringify(kept));
+        }
+      }
+      return json({ ok: true, deleted, since });
+    }
+
     if (path === '/api/diag' && method === 'GET') {
       return handleDiag(env);
     }
