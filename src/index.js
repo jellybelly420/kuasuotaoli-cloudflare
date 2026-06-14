@@ -61,8 +61,27 @@ async function makeToken(password, secret) {
 // ---------------------------------------------------------------------------
 
 async function proxyFetch(env, url, method, headers, body) {
+  // 方式 1（首选）：直接 HTTPS/HTTP fetch 到 VPS 上的代理（PROXY_URL），
+  // 不依赖 Cloudflare 隧道 / VPC 绑定，最稳。PROXY_URL 例如 "http://1.2.3.4:3000"。
+  if (env.PROXY_URL) {
+    const base = env.PROXY_URL.replace(/\/+$/, '');
+    const resp = await fetch(`${base}/proxy`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-proxy-secret': env.EXCHANGE_PROXY_SECRET || '',
+      },
+      body: JSON.stringify({ url, method, headers, body: body || null }),
+    });
+    if (!resp.ok) {
+      const t = await resp.text();
+      throw new Error(`Proxy error ${resp.status}: ${t.slice(0, 200)}`);
+    }
+    return resp;
+  }
+
+  // 方式 2（兜底）：通过 VPC 隧道调用 VPS 上的代理服务
   if (env.EXCHANGE_VPC) {
-    // 通过 VPC 隧道调用 VPS 上的代理服务，再由代理转发到交易所
     const resp = await env.EXCHANGE_VPC.fetch('http://vpc-service/proxy', {
       method: 'POST',
       headers: {
@@ -77,6 +96,8 @@ async function proxyFetch(env, url, method, headers, body) {
     }
     return resp;
   }
+
+  // 方式 3：直连交易所（CF 出口 IP 可能被地区封）
   return fetch(url, { method, headers, body: body || undefined });
 }
 
