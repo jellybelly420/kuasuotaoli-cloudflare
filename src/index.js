@@ -63,7 +63,7 @@ async function makeToken(password, secret) {
 async function proxyFetch(env, url, method, headers, body) {
   if (env.EXCHANGE_VPC) {
     // 通过 VPC 隧道调用 VPS 上的代理服务，再由代理转发到交易所
-    const resp = await env.EXCHANGE_VPC.fetch('http://localhost:3000/proxy', {
+    const resp = await env.EXCHANGE_VPC.fetch('http://127.0.0.1:3000/proxy', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
