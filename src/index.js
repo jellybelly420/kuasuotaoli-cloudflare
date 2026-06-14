@@ -63,7 +63,7 @@ async function makeToken(password, secret) {
 async function proxyFetch(env, url, method, headers, body) {
   if (env.EXCHANGE_VPC) {
     // 通过 VPC 隧道调用 VPS 上的代理服务，再由代理转发到交易所
-    const resp = await env.EXCHANGE_VPC.fetch('http://localhost:3000/proxy', {
+    const resp = await env.EXCHANGE_VPC.fetch('http://vpc-service/proxy', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -743,6 +743,18 @@ async function handleSaveSnapshot(request, env) {
   const body = await request.json();
   const { nav, perExchange, perAccount } = body || {};
   if (!nav || nav <= 0) return json({ ok: false, error: 'Invalid NAV value' });
+
+  // 防污染：所有「配置了 API key 的交易所」都必须返回 >0 NAV，否则拒绝写入。
+  // 这样即使某个交易所暂时挂掉（API 403/超时/IP 漂移），也不会写入残缺快照导致历史曲线断崖。
+  const expected = new Set();
+  for (const { envPrefix, exchange } of ACCOUNT_DEFS) {
+    if (env[`${envPrefix}_API_KEY`] && env[`${envPrefix}_SECRET_KEY`]) expected.add(exchange);
+  }
+  const missing = [...expected].filter(ex => !((perExchange || {})[ex] > 0));
+  if (missing.length) {
+    return json({ ok: false, saved: false, reason: 'incomplete_snapshot', missing });
+  }
+
   const result = await maybeSaveSnapshot(env, nav, perExchange || {}, perAccount || {});
   return json({ ok: true, ...result });
 }
@@ -753,6 +765,16 @@ async function handleBackfill(request, env) {
   const body = await request.json().catch(() => ({}));
   const { currentNAV, perExchange } = body || {};
   if (!currentNAV || currentNAV <= 0) return json({ ok: false, error: 'Invalid NAV' });
+
+  // 同样的完整性检查，避免用残缺数据回填出错误的历史曲线
+  const expected = new Set();
+  for (const { envPrefix, exchange } of ACCOUNT_DEFS) {
+    if (env[`${envPrefix}_API_KEY`] && env[`${envPrefix}_SECRET_KEY`]) expected.add(exchange);
+  }
+  const missing = [...expected].filter(ex => !((perExchange || {})[ex] > 0));
+  if (missing.length) {
+    return json({ ok: false, reason: 'incomplete_snapshot', missing });
+  }
 
   const snapshots = await loadSnapshots(env);
 
@@ -1799,6 +1821,28 @@ export default {
 
     if (path === '/api/backfill' && method === 'POST') {
       return handleBackfill(request, env);
+    }
+
+    if (path === '/api/snapshots/delete' && method === 'POST') {
+      const body = await request.json().catch(() => ({}));
+      const since = body.since;
+      if (!since || !/^\d{4}-\d{2}-\d{2}$/.test(since)) {
+        return json({ ok: false, error: 'since=YYYY-MM-DD required' }, 400);
+      }
+      let deleted = 0;
+      if (env.NAV_DB) {
+        const r = await env.NAV_DB.prepare('DELETE FROM nav_snapshots WHERE date >= ?1').bind(since).run();
+        deleted = r.meta?.changes ?? 0;
+      }
+      if (env.NAV_KV) {
+        const raw = await env.NAV_KV.get('nav_snapshots', { type: 'json' });
+        if (raw) {
+          const kept = {};
+          for (const [d, v] of Object.entries(raw)) if (d < since) kept[d] = v;
+          await env.NAV_KV.put('nav_snapshots', JSON.stringify(kept));
+        }
+      }
+      return json({ ok: true, deleted, since });
     }
 
     if (path === '/api/diag' && method === 'GET') {
