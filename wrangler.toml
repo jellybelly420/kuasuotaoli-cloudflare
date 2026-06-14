@@ -12,10 +12,11 @@ binding = "NAV_DB"
 database_name = "kuasuotaoli"
 database_id = "f2575b29-89c6-4214-9b93-f345cc8a673f"
 
-[[vpc_services]]
-binding = "EXCHANGE_VPC"
-service_id = "019ea731-3ad8-7772-848b-3987354e3633"
-remote = true
+# 实时取数改为 Worker 直接 fetch VPS 代理（PROXY_URL secret），
+# 不再依赖 Cloudflare 隧道 / VPC 绑定。
+# 需设置 secret：
+#   wrangler secret put PROXY_URL              (例如 http://1.2.3.4:3000)
+#   wrangler secret put EXCHANGE_PROXY_SECRET  (与 VPS 代理的 PROXY_SECRET 一致)
 
 [vars]
 PRINCIPAL_USD = "1000000"
