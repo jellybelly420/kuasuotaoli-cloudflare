@@ -1846,6 +1846,28 @@ export default {
       return handleLogin(request, env);
     }
 
+    // 交易所代理端点：当本应用部署到非受限地区（如 Deno）时充当 Binance 代理。
+    // 由 x-proxy-secret 鉴权（值 = Worker 侧的 EXCHANGE_PROXY_SECRET / 本侧 PROXY_SECRET），
+    // 与登录鉴权独立，因此放在 requireAuth 之前。
+    if (path === '/proxy' && method === 'POST') {
+      const want = env.PROXY_SECRET || env.EXCHANGE_PROXY_SECRET || '';
+      const got = request.headers.get('x-proxy-secret') || '';
+      if (!want || got !== want) return json({ error: 'Unauthorized' }, 401);
+      let p;
+      try {
+        p = await request.json();
+      } catch {
+        return json({ error: 'bad json' }, 400);
+      }
+      const { url: target, method: m = 'GET', headers = {}, body = null } = p || {};
+      if (!target) return json({ error: 'missing url' }, 400);
+      const upstream = await fetch(target, { method: m, headers, body: body ?? undefined });
+      return new Response(upstream.body, {
+        status: upstream.status,
+        headers: { 'Content-Type': upstream.headers.get('content-type') || 'application/json' },
+      });
+    }
+
     // Protected routes
     const authErr = requireAuth(request, env);
     if (authErr) return authErr;
