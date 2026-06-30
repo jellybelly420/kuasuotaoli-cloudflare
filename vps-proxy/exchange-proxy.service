@@ -1,0 +1,21 @@
+# systemd 服务单元：把交易所代理跑成开机自启的常驻服务
+# 安装：
+#   sudo cp server.js /opt/exchange-proxy/server.js
+#   sudo cp exchange-proxy.service /etc/systemd/system/
+#   echo 'PROXY_SECRET=换成你的随机密码' | sudo tee /etc/exchange-proxy.env
+#   sudo systemctl daemon-reload && sudo systemctl enable --now exchange-proxy
+[Unit]
+Description=Exchange Proxy (Binance)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Environment=PORT=3000
+EnvironmentFile=/etc/exchange-proxy.env
+ExecStart=/usr/bin/node /opt/exchange-proxy/server.js
+Restart=always
+RestartSec=2
+User=root
+
+[Install]
+WantedBy=multi-user.target
