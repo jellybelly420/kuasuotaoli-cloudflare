@@ -60,44 +60,58 @@ async function makeToken(password, secret) {
 // Exchange API helpers
 // ---------------------------------------------------------------------------
 
+// 只有 Binance 需要走代理：Cloudflare 出口 IP 会被 Binance 按地区封（451/403）。
+// Bybit 对 Cloudflare 出口 IP 不封，直连即可，无需经过 Deno/VPS 代理。
+function shouldProxy(url) {
+  try {
+    return /(^|\.)binance\.com$/.test(new URL(url).hostname);
+  } catch {
+    return false;
+  }
+}
+
 async function proxyFetch(env, url, method, headers, body) {
-  // 方式 1（首选）：直接 HTTPS/HTTP fetch 到 VPS 上的代理（PROXY_URL），
-  // 不依赖 Cloudflare 隧道 / VPC 绑定，最稳。PROXY_URL 例如 "http://1.2.3.4:3000"。
-  if (env.PROXY_URL) {
-    const base = env.PROXY_URL.replace(/\/+$/, '');
-    const resp = await fetch(`${base}/proxy`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-proxy-secret': env.EXCHANGE_PROXY_SECRET || '',
-      },
-      body: JSON.stringify({ url, method, headers, body: body || null }),
-    });
-    if (!resp.ok) {
-      const t = await resp.text();
-      throw new Error(`Proxy error ${resp.status}: ${t.slice(0, 200)}`);
+  // Binance → 走代理；Bybit / 公开行情兜底 → 直连 Cloudflare。
+  if (shouldProxy(url)) {
+    // 方式 1（首选）：直接 HTTPS/HTTP fetch 到 VPS/Deno 上的代理（PROXY_URL），
+    // 不依赖 Cloudflare 隧道 / VPC 绑定，最稳。PROXY_URL 例如 "http://1.2.3.4:3000"。
+    if (env.PROXY_URL) {
+      const base = env.PROXY_URL.replace(/\/+$/, '');
+      const resp = await fetch(`${base}/proxy`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-proxy-secret': env.EXCHANGE_PROXY_SECRET || '',
+        },
+        body: JSON.stringify({ url, method, headers, body: body || null }),
+      });
+      if (!resp.ok) {
+        const t = await resp.text();
+        throw new Error(`Proxy error ${resp.status}: ${t.slice(0, 200)}`);
+      }
+      return resp;
     }
-    return resp;
+
+    // 方式 2（兜底）：通过 VPC 隧道调用 VPS 上的代理服务
+    if (env.EXCHANGE_VPC) {
+      const resp = await env.EXCHANGE_VPC.fetch('http://vpc-service/proxy', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-proxy-secret': env.EXCHANGE_PROXY_SECRET || '',
+        },
+        body: JSON.stringify({ url, method, headers, body: body || null }),
+      });
+      if (!resp.ok) {
+        const t = await resp.text();
+        throw new Error(`Proxy error ${resp.status}: ${t.slice(0, 200)}`);
+      }
+      return resp;
+    }
+    // 未配置代理时，对 Binance 也只能直连（CF 出口 IP 可能被地区封）。
   }
 
-  // 方式 2（兜底）：通过 VPC 隧道调用 VPS 上的代理服务
-  if (env.EXCHANGE_VPC) {
-    const resp = await env.EXCHANGE_VPC.fetch('http://vpc-service/proxy', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-proxy-secret': env.EXCHANGE_PROXY_SECRET || '',
-      },
-      body: JSON.stringify({ url, method, headers, body: body || null }),
-    });
-    if (!resp.ok) {
-      const t = await resp.text();
-      throw new Error(`Proxy error ${resp.status}: ${t.slice(0, 200)}`);
-    }
-    return resp;
-  }
-
-  // 方式 3：直连交易所（CF 出口 IP 可能被地区封）
+  // 直连交易所（Bybit 走这里；Binance 仅在未配置代理时退化到这里）
   return fetch(url, { method, headers, body: body || undefined });
 }
 
@@ -952,7 +966,15 @@ async function handleDiag(env) {
     const s = env[`${def.envPrefix}_SECRET_KEY`];
     accounts[def.label] = (k && s) ? '✅ 已配置' : '❌ 未配置';
   }
-  return json({ secrets: status, accounts });
+  // 取数路由 / 代理配置（Binance 走代理，Bybit 直连）
+  const routing = {
+    Binance: env.PROXY_URL
+      ? `走代理 → ${env.PROXY_URL}`
+      : (env.EXCHANGE_VPC ? '走 VPC 隧道代理' : '⚠️ 未配置代理，直连（可能被币安地区封）'),
+    Bybit: '直连 Cloudflare',
+    EXCHANGE_PROXY_SECRET: env.EXCHANGE_PROXY_SECRET ? '✅ 已配置' : '❌ 未配置（注意变量名必须是 EXCHANGE_PROXY_SECRET）',
+  };
+  return json({ secrets: status, accounts, routing });
 }
 
 
