@@ -5,7 +5,9 @@ Cloudflare Worker 的出口 IP 会被 Binance 按地区封（451/403），因此
 
 ## 部署到 Deno Deploy
 
-1. 把 Deno Deploy 项目的**入口文件 / Entrypoint** 设为 `deno-proxy/main.ts`。
+代理脚本就是仓库根目录的 `main.ts`，新版 Deno Deploy 会自动识别为入口，无需选子目录。
+
+1. Deno Deploy 关联本仓库（选整个仓库即可，入口默认就是根目录 `main.ts`）。
 2. 添加环境变量 `PROXY_SECRET`，值随便设一个随机串。
 3. 部署，得到 URL，例如 `https://xxx.deno.net`。
 
